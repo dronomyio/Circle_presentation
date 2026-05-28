@@ -217,3 +217,122 @@ A $1M swap on a deep V3 pool with 50 ticks of liquidity scores low even with hig
 
 That's the microstructure connection — confirmed data defines the terrain, mempool data identifies the incoming threat.
 
+# What does volume mean here in the implicit order book?
+
+Great question — "volume" in the implicit order book context means something different from what most people think.
+
+---
+
+## Volume in Traditional Markets vs DeFi AMMs
+
+In traditional markets, volume is straightforward — shares traded, dollars exchanged. The order book has explicit bids and asks with quantities. Volume flows against that book.
+
+In a DeFi AMM there is **no explicit order book** and no traditional volume concept. What exists instead:
+
+---
+
+## What Volume Actually Means in Each Context
+
+**In VPIN calculation:**
+Volume = the **token amount swapped** in each transaction
+
+```
+Swap event: trader sends 10 ETH, receives 18,000 USDC
+→ V_buy contribution  = $18,000  (USDC bought = price went up)
+→ V_sell contribution = $0
+→ This swap is 100% buy volume
+```
+
+Volume is bucketed by dollar value of each swap, then classified as buy or sell based on price direction.
+
+**In Kyle's Lambda calculation:**
+Volume = the **dollar size of the swap** that caused the price change
+
+```
+λ = ΔPrice / ΔVolume
+  = (price_after - price_before) / swap_size_usd
+
+Example:
+  Pool: ETH/USDC
+  Swap: $100,000 of ETH bought
+  Price moved: $1,800 → $1,830  (+$30)
+  Kyle's Lambda = $30 / $100,000 = 0.0003
+```
+
+Higher lambda = each dollar of volume moves price more = thinner liquidity.
+
+**In the implicit order book context:**
+Volume is **not stored in the order book at all** — this is the key distinction.
+
+---
+
+## The Critical Difference
+
+In a traditional order book:
+
+```
+Bids:                  Asks:
+Price  | Volume        Price  | Volume
+1,799  | 500 ETH      1,801  | 300 ETH
+1,798  | 1200 ETH     1,802  | 800 ETH
+1,797  | 2000 ETH     1,803  | 1500 ETH
+```
+
+Volume sits in the book **waiting** to be matched.
+
+In Uniswap V3's implicit order book:
+
+```
+Tick   | Price  | Liquidity (L)
+-200   | 1,797  | 450,000
+-100   | 1,798  | 1,200,000
+0      | 1,800  | 3,400,000  ← current tick
++100   | 1,801  | 800,000
++200   | 1,802  | 200,000    ← near cliff
++300   | 1,803  | 0          ← CLIFF
+```
+
+What's stored is **liquidity L**, not volume. Liquidity is a mathematical construct — the geometric mean of token reserves at that price level:
+
+```
+L = sqrt(x * y)  where x, y are virtual reserves at that tick
+```
+
+Volume only exists **as it flows through** — it's not stored anywhere. Each swap is a flow event that moves through the liquidity ticks.
+
+---
+
+## How Volume and Liquidity Relate
+
+The connection between swap volume and price impact through the implicit order book:
+
+```
+For a swap of volume ΔV (in USD) crossing tick range [t1, t2]:
+
+  Tokens received = L * (sqrt(P2) - sqrt(P1))   ← for token0
+  Price impact    = P2 - P1
+
+  Where:
+    L  = liquidity at that tick range
+    P1 = price entering the tick
+    P2 = price exiting the tick
+
+  Rearranging for Kyle's Lambda:
+    λ_local = (P2 - P1) / ΔV = 1 / (2 * L * sqrt(P))
+```
+
+So Kyle's Lambda at any point in the V3 pool is **inversely proportional to liquidity L**. Near a cliff where L → 0, lambda → ∞.
+
+---
+
+## Summary
+
+| Context | What "volume" means |
+|---|---|
+| VPIN | Dollar value of each swap, classified buy/sell |
+| Kyle's Lambda | Dollar size of swap causing a price move |
+| Implicit order book | Volume doesn't live in the book — only liquidity L does |
+| Cliff score LOB depth | How much volume is needed to reach the cliff (derived from L) |
+
+The implicit order book tells you **how much volume it would take to move price to the cliff** — that's the LOB depth component of your cliff score. A pool where $10K moves price to the cliff is far more dangerous than one requiring $10M.
+
