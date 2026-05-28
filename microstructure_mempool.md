@@ -336,3 +336,109 @@ So Kyle's Lambda at any point in the V3 pool is **inversely proportional to liqu
 
 The implicit order book tells you **how much volume it would take to move price to the cliff** — that's the LOB depth component of your cliff score. A pool where $10K moves price to the cliff is far more dangerous than one requiring $10M.
 
+# Does VPIN/Kyle also depend of the implicit order book?
+
+Yes — both depend on it, but in different ways and to different degrees.
+
+---
+
+## VPIN and the Implicit Order Book
+
+VPIN depends on the order book **indirectly** through trade classification. The core formula `|V_buy - V_sell| / V_total` requires you to classify each trade as a buy or sell. In traditional equity markets you use the Lee-Ready algorithm against the bid-ask spread. In DeFi there's no explicit bid-ask — you infer it from the pool state.
+
+For **V3**, trade direction classification uses the tick:
+
+```python
+# If swap moves price UP (tick increases) → buyer initiated
+# If swap moves price DOWN (tick decreases) → seller initiated
+direction = "buy" if tick_after > tick_before else "sell"
+
+# But the MAGNITUDE of the signal depends on where in the tick range
+# the swap occurred — thin liquidity ticks amplify VPIN
+vpin_weight = 1 + (1 / lob_depth_at_tick)
+# A swap crossing a thin tick contributes more to VPIN imbalance
+# than the same size swap in a deep tick
+```
+
+For **V2**, trade direction is simpler — just compare reserve changes — but VPIN doesn't capture the full picture because there are no tick cliffs to amplify the signal.
+
+So VPIN is **more informative on V3** precisely because the implicit order book tells you whether the volume imbalance happened in a deep or thin region of liquidity.
+
+---
+
+## Kyle's Lambda and the Implicit Order Book
+
+Kyle's Lambda depends on the order book **directly and fundamentally**. Lambda measures price impact per unit volume:
+
+```
+λ = ΔPrice / ΔVolume
+```
+
+In Kyle's original 1985 model, lambda is determined by the market maker's order book depth. In DeFi the equivalent is the AMM liquidity function:
+
+**V2 — Lambda is constant per pool state:**
+```python
+# From constant product x*y=k
+# Price impact of swap Δx:
+lambda_v2 = price / (2 * reserve_x_usd)
+# Thinner reserves → higher lambda → easier price manipulation
+```
+
+**V3 — Lambda varies tick by tick:**
+```python
+# At each tick, the effective liquidity determines local lambda
+lambda_v3_at_tick = price_i / (2 * liquidity_i / sqrt(price_i))
+
+# Near a liquidity cliff where liquidity_i → 0:
+# lambda → infinity — infinite price impact per unit volume
+# This is the "cliff" — MEV becomes trivially profitable
+```
+
+This is why the implicit order book is **critical for Kyle's Lambda on V3** — the same trade size produces wildly different price impact depending on which tick range it crosses. A $10K swap in a deep tick might move price 0.01%. The same $10K swap crossing a liquidity cliff might move price 5%. Lambda captures that difference only if you know the tick-level liquidity distribution.
+
+---
+
+## The Dependency Map
+
+```
+                    Implicit Order Book (V3 Ticks)
+                           │
+          ┌────────────────┼────────────────┐
+          │                │                │
+    VPIN classification   Kyle's Lambda    LOB Depth
+    (buy/sell weighting)  (tick-local      (cliff proximity)
+                           price impact)
+          │                │                │
+          └────────────────┴────────────────┘
+                           │
+                      Cliff Score
+```
+
+**VPIN** — weak dependency. Uses tick direction for classification but doesn't strictly require full order book reconstruction. Works on V2 with just reserve changes.
+
+**Kyle's Lambda** — strong dependency on V3. Requires knowing liquidity at the specific tick range the swap crosses. On V2 it's a pool-level calculation using reserves only.
+
+**LOB Depth** — complete dependency. This component IS the implicit order book — it measures how many ticks of liquidity exist between current price and the nearest cliff.
+
+---
+
+## Practical Implication
+
+This is why your Vertica pipeline matters so much. To compute accurate cliff scores on V3 pools you need:
+
+```sql
+-- Reconstruct current liquidity at each tick
+SELECT 
+    tick,
+    SUM(amount) as net_liquidity,
+    1.0001^tick as price,
+    SUM(amount) / SQRT(1.0001^tick) as depth_tokens
+FROM uniswap.v3_liquidity_events  -- Mint + Burn events
+WHERE pool = '0x...'
+  AND block_number <= current_block
+GROUP BY tick
+ORDER BY tick;
+```
+
+Without that tick-level reconstruction, your Kyle's Lambda defaults to a pool-level approximation (like V2) and your VPIN loses the liquidity-weighting that makes it precise. The cliff score still works directionally — which is what the current demo is doing — but the tick-level reconstruction is what makes it institutional grade.
+
